@@ -10,6 +10,21 @@ patches, verifying them against the test suite, and opening draft PRs.
 
 Everything runs locally. No code, embeddings, or queries leave your machine.
 
+> **Project Status:** Oracle is under active development following an 8-phase
+> build plan. The architectural design is complete and documented in
+> [CLAUDE.md](CLAUDE.md). Current progress:
+>
+> | Phase | Scope | Status |
+> |-------|-------|--------|
+> | 1 | AST chunker (Python) | Done |
+> | 2 | Structured logging + LLM client | Done |
+> | 3 | Query preprocessor + technicality scorer + query bank | In progress |
+> | 4 | BM25 + semantic retriever + indexer | Planned |
+> | 5 | Hybrid retriever + query router | Planned |
+> | 6 | Q&A engine + citation builder + debug CLI | Planned |
+> | 7 | Issue resolver (analyzer, patch, tests, PR) | Planned |
+> | 8 | API server + React UI | Planned |
+
 ---
 
 ## What Oracle Does
