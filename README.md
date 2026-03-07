@@ -478,9 +478,3 @@ The issue resolver generates patches based on the code it can see. Complex
 multi-file refactors, changes requiring new dependencies, or issues that need
 context beyond the codebase (external API changes, infrastructure issues) are
 outside its scope.
-
----
-
-## License
-
-[MIT](LICENSE)
