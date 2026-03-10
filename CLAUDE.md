@@ -730,15 +730,65 @@ Replace the block with a placeholder in `natural_language`. Set
 scorer will naturally score them at 0.9+ because of identifier density.
 A half-working special case is worse than letting the standard pipeline handle it.
 
-**Identifier extraction:**
+**Identifier extraction — two-stage filter:**
+
+The regex extracts all 3+ character tokens, but plain English words like
+"generates", "accounts", "dispatcher" match too. Expanding the stop word
+list is unsustainable. Instead, use a two-stage filter after stop word removal:
+
+**Stage 1 — Structural pattern detection (no index needed):**
 ```python
 IDENTIFIER_PATTERN = r'\b[A-Za-z_][A-Za-z0-9_]{2,}\b'
 # Run on both natural language and pasted code
-# Filter out common English stop words and Python/JS keywords
+# Filter out language keywords and common function words
 STOP_WORDS = {"the", "and", "for", "with", "this", "that", "what", "how",
               "does", "from", "into", "about", "which", "when", "where",
               "def", "class", "return", "import", "function", "var", "let",
               "const", "type", "interface", "public", "private"}
+# Do NOT expand STOP_WORDS. The structural check handles the rest.
+
+def _is_code_identifier(token: str) -> bool:
+    """Token has code-like structural markers that English words lack."""
+    if '_' in token:                                             # snake_case, SCREAMING_SNAKE
+        return True
+    if token[0].islower() and any(c.isupper() for c in token[1:]):  # camelCase
+        return True
+    if token[0].isupper() and any(c.isupper() for c in token[2:]):  # PascalCase
+        return True
+    return False
+```
+
+Catches: `getUserById` (camelCase), `create_user` (snake_case),
+`UserService` (PascalCase), `MAX_RETRIES` (SCREAMING_SNAKE).
+Does NOT catch: "generates", "accounts", "thing", "dispatcher".
+
+**Stage 2 — Index cross-reference (when index exists):**
+Tokens that passed stop word filtering but failed `_is_code_identifier`
+get a second chance: check against `index_symbols`, a set of raw function
+and class names from the indexed codebase. If the token matches a real
+symbol, it's an identifier.
+
+`index_symbols` is persisted at `{CHROMA_PERSIST_DIR}/symbols.pkl` by
+the indexer — a set of raw names like `{"getUserById", "login", "UserService"}`.
+This is NOT the same as `index_vocabulary` (which contains tokenized pieces
+like `{"get", "user", "by"}` used by the technicality scorer for s3).
+
+`preprocess_query` accepts `index_symbols: set[str] | None = None`. When
+None (no index built yet), only Stage 1 applies. Graceful degradation.
+
+**Code block exception:** Tokens extracted from inside triple-backtick
+code blocks skip both stages — they are always identifiers. If a user
+pastes code, every named token in that code is a code identifier by
+definition.
+
+**Full pipeline per token:**
+```
+Token from query
+  → In STOP_WORDS? → discard
+  → From code block? → keep (bypass both stages)
+  → _is_code_identifier(token)? → keep
+  → index_symbols provided AND token in index_symbols? → keep
+  → discard
 ```
 
 **File path extraction:**
