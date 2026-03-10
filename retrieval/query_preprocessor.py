@@ -69,6 +69,18 @@ STRUCTURAL_KEYWORDS: list[str] = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+# some hardening can definitely be done here to avoid false positives (e.g. "generates" contains "get" but isn't a code identifier) or also (someone typing like thIS or THIS could create false positives)
+# Instead of just "any uppercase after position 0"
+# Require the transition to produce 2+ sub-tokens of length 2+
+#potential fix:
+# def _is_code_identifier(token: str) -> bool:
+#     if "_" in token:
+#         return True
+#     # Split on camelCase boundaries and check the pieces are meaningful
+#     parts = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', token).split()
+#     if len(parts) >= 2 and all(len(p) >= 2 for p in parts):
+#         return True
+#     return False
 
 def _is_code_identifier(token: str) -> bool:
     """
@@ -90,6 +102,7 @@ def _is_code_identifier(token: str) -> bool:
     if token[0].isupper() and any(c.isupper() for c in token[2:]):
         return True
     return False
+
 
 
 def _extract_code_blocks(query: str) -> tuple[str, str | None, str | None]:

@@ -14,6 +14,11 @@ from pydantic import BaseModel
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser
 
+from Oracle.config import SUMMARIZE_MIN_LINES
+from Oracle.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Tree-sitter setup — done once at module import, reused for every parse call
@@ -22,14 +27,6 @@ from tree_sitter import Language, Parser
 PY_LANGUAGE = Language(tspython.language())  # Load the compiled Python grammar
 PARSER = Parser(PY_LANGUAGE)                 # Parser bound to that grammar
 
-
-# ---------------------------------------------------------------------------
-# Chunk size limits — pulled from CLAUDE.md config spec
-# ---------------------------------------------------------------------------
-
-MAX_FUNCTION_LINES = 150          # Functions longer than this get truncated
-MAX_FUNCTION_TRUNCATED_HEAD = 50  # Keep the first 50 lines …
-MAX_FUNCTION_TRUNCATED_TAIL = 20  # … and the last 20 lines
 
 MIN_DIRECTORY_FILES = 3   # Directories with fewer files don't get a chunk
 MAX_DIRECTORY_FILES = 20  # Directories with more files get split by subdir
@@ -57,6 +54,9 @@ class ChunkMetadata(BaseModel):
     parent_file_chunk_id: str | None    # Always set for class and function chunks
     parent_class_chunk_id: str | None   # Set only for methods inside a class
     content: str            # The actual text stored for this chunk
+    full_content: str | None = None       # Full function body for summarized chunks
+    is_summarized: bool = False           # True if content is an LLM summary, not raw code
+    original_line_count: int | None = None  # Set for long functions (>= SUMMARIZE_MIN_LINES)
 
 
 # ---------------------------------------------------------------------------
@@ -177,29 +177,6 @@ def _collect_decorators(node, source_bytes: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Truncation — enforces the max function body size from CLAUDE.md
-# ---------------------------------------------------------------------------
-
-def _maybe_truncate(content: str) -> str:
-    """If a function body exceeds MAX_FUNCTION_LINES, keep the head and tail
-    with a clear marker showing how many lines were omitted.
-
-    This prevents enormous functions from bloating the index while still
-    capturing the signature/setup (head) and the return/cleanup (tail).
-    """
-    lines = content.split("\n")
-    if len(lines) <= MAX_FUNCTION_LINES:
-        return content  # Under the limit — keep as-is
-
-    head = lines[:MAX_FUNCTION_TRUNCATED_HEAD]
-    tail = lines[-MAX_FUNCTION_TRUNCATED_TAIL:]
-    omitted = len(lines) - MAX_FUNCTION_TRUNCATED_HEAD - MAX_FUNCTION_TRUNCATED_TAIL
-    marker = f"    [TRUNCATED: {omitted} lines omitted]"
-
-    return "\n".join(head + [marker] + tail)
-
-
-# ---------------------------------------------------------------------------
 # Import extraction — used for file-level chunks
 # ---------------------------------------------------------------------------
 
@@ -280,7 +257,16 @@ def chunk_file(
             func_name_str = _node_text(func_name, source_bytes) if func_name else "unknown"
 
             full_text = _node_text(outer_node, source_bytes)  # Includes decorators
-            truncated = _maybe_truncate(full_text)
+            line_count = full_text.count("\n") + 1
+            orig_line_count = line_count if line_count >= SUMMARIZE_MIN_LINES else None
+
+            if orig_line_count is not None:
+                logger.info(
+                    "function_flagged_for_summarization",
+                    file_path=file_path,
+                    function_name=func_name_str,
+                    line_count=line_count,
+                )
 
             sig = _get_function_signature(actual_node, source_bytes)
             if decorators_text:
@@ -301,7 +287,8 @@ def chunk_file(
                 parent_directory_chunk_id=dir_chunk_id,
                 parent_file_chunk_id=file_chunk_id,
                 parent_class_chunk_id=None,    # Not inside a class
-                content=truncated,
+                content=full_text,
+                original_line_count=orig_line_count,
             ))
 
         # --- Top-level class ---
@@ -352,7 +339,18 @@ def chunk_file(
 
                         # Full method body for the function-level chunk
                         full_method = _node_text(member_outer, source_bytes)
-                        truncated_method = _maybe_truncate(full_method)
+                        method_line_count = full_method.count("\n") + 1
+                        method_orig_line_count = (
+                            method_line_count if method_line_count >= SUMMARIZE_MIN_LINES else None
+                        )
+
+                        if method_orig_line_count is not None:
+                            logger.info(
+                                "function_flagged_for_summarization",
+                                file_path=file_path,
+                                function_name=method_name_str,
+                                line_count=method_line_count,
+                            )
 
                         chunks.append(ChunkMetadata(
                             chunk_id=_make_chunk_id(file_path, class_name_str, method_name_str, "function"),
@@ -367,7 +365,8 @@ def chunk_file(
                             parent_directory_chunk_id=dir_chunk_id,
                             parent_file_chunk_id=file_chunk_id,
                             parent_class_chunk_id=class_chunk_id,  # Key link: method → class
-                            content=truncated_method,
+                            content=full_method,
+                            original_line_count=method_orig_line_count,
                         ))
 
             # Add method signatures to class chunk content
